@@ -1,8 +1,10 @@
 #include <SFML/Network.hpp>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <thread>
+#include <variant>
 
 std::mutex cout_mutex;
 
@@ -15,7 +17,13 @@ enum class Responses : uint8_t {
     kMessage,
     kEmptyResponse
 };
-enum class Queries : uint8_t { kLogin, kEcho };
+enum class Queries : uint8_t { kLogin, kEcho, kSignUp };
+
+void PrintMessage(std::string msg) {
+    cout_mutex.lock();
+    std::cout << msg;
+    cout_mutex.unlock();
+}
 
 sf::Packet& operator<<(sf::Packet& out, const Responses& rep) {
     return out << static_cast<uint8_t>(rep);
@@ -39,9 +47,55 @@ sf::Packet& operator>>(sf::Packet& in, Queries& rep) {
     return in;
 }
 
-class ClientInteraction {
+class UserData {
    public:
+    friend std::ifstream& operator>>(std::ifstream& in, UserData& data);
+    friend std::ofstream& operator<<(std::ofstream& in, const UserData& data);
+
    private:
+    std::string password_;
+    uint8_t is_admin_; // Used like bool
+};
+
+std::ifstream& operator>>(std::ifstream& in, UserData& data) {
+    in >> data.password_;
+    in >> data.is_admin_;
+    return in;
+}
+
+std::ofstream& operator<<(std::ofstream& out, const UserData& data) {
+    out << data.password_;
+    out << data.is_admin_;
+    return out;
+}
+
+class UsersData {
+   public:
+    void LoadData(std::string DataPath) {
+        std::ifstream in(DataPath.c_str());
+        while (!in.eof()) {
+            std::string user_name;
+            in >> user_name;
+            UserData user_data;
+            in >> user_data;
+            data_[user_name] = user_data;
+        }
+    }
+
+    void SaveData(std::string DataPath) {
+        std::ofstream out(DataPath.c_str());
+        for (auto i : data_) {
+            out << i.first << std::endl;
+            out << i.second << std::endl;
+        }
+    }
+
+    std::map<std::string, UserData>& Data() {
+        return data_;
+    }
+
+   private:
+    std::map<std::string, UserData> data_;
 };
 
 class Server {
@@ -65,9 +119,7 @@ class Server {
                     "An error has occured during accepting the "
                     "clients connection"));
             }
-            cout_mutex.lock();
-            std::cout << "User connected" << std::endl;
-            cout_mutex.unlock();
+            PrintMessage("User connected\n");
             user_vector_mutex_.lock();
             cur_users_.push_back(client);
             user_id_.push_back(-1);
@@ -118,14 +170,10 @@ class Server {
     }
 
     void HandleQuery(sf::TcpSocket* socket, sf::Packet& packet) {
-        cout_mutex.lock();
-        std::cout << "Packet size: " << packet.getDataSize() << std::endl;
-        cout_mutex.unlock();
+        PrintMessage("Packet size: " + std::to_string(packet.getDataSize()) + '\n');
         Queries que;
         if (!(packet >> que)) {
-            cout_mutex.lock();
-            std::cout << "Bad packet!" << packet.getDataSize() << std::endl;
-            cout_mutex.unlock();
+            PrintMessage("Bad packet!" + std::to_string(packet.getDataSize()) + '\n');
             packet << Responses::kError;
             SendData(socket, packet);
             return;
@@ -150,16 +198,14 @@ class Server {
                 break;
             }
         }
-        cout_mutex.lock();
-        std::cout << "Query was answered." << std::endl;
-        cout_mutex.unlock();
+        PrintMessage("Query was answered.\n");
     }
 
     void ClientHandler(sf::TcpSocket* socket) {
         for (;;) {
             sf::Packet r_packet;
             if (GetData(socket, r_packet) == true) {
-                std::cout << "Got data" << std::endl;
+                PrintMessage("Got data\n");
                 HandleQuery(socket, r_packet);
             } else {
                 DeleteUser(socket);
@@ -170,7 +216,9 @@ class Server {
     }
 
     std::mutex user_vector_mutex_;
-    std::vector<sf::TcpSocket*> cur_users_;
+    std::vector<sf::TcpSocket*>
+        cur_users_;  // TODO: optimize current users structure by using oset to reach O(logN)
+                     // complexity in adding and deleting users.
     std::vector<uint64_t> user_id_;
     uint16_t port_;
 };
