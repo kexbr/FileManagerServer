@@ -3,10 +3,15 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <random>
 #include <thread>
-#include <variant>
 
 std::mutex cout_mutex;
+
+const uint8_t kLoginMinLength = 4;
+const uint8_t kPasswordMinLength = 4;
+const uint8_t kLoginMaxLength = 32;
+const uint8_t kPasswordMaxLength = 32;
 
 enum class Responses : uint8_t {
     kSuccessConnection,
@@ -15,14 +20,22 @@ enum class Responses : uint8_t {
     kError,
     kBadLogin,
     kMessage,
-    kEmptyResponse
+    kEmptyResponse,
+    kSuccessLogin,
+    kLoginIsAlreadyUsed,
+    kSuccessSignUp,
+    kBadLoginFormat,
 };
-enum class Queries : uint8_t { kLogin, kEcho, kSignUp };
+enum class Queries : uint8_t { kLogin, kEcho, kSignUp, kSignIn, kLogOut, kLoginFormat };
 
 void PrintMessage(std::string msg) {
     cout_mutex.lock();
     std::cout << msg;
     cout_mutex.unlock();
+}
+
+bool CheckLoginFormat(std::string& login, std::string& password) {
+    if (login.size())
 }
 
 sf::Packet& operator<<(sf::Packet& out, const Responses& rep) {
@@ -51,20 +64,21 @@ class UserData {
    public:
     friend std::ifstream& operator>>(std::ifstream& in, UserData& data);
     friend std::ofstream& operator<<(std::ofstream& in, const UserData& data);
-
-   private:
+    std::string login_;
     std::string password_;
-    uint8_t is_admin_; // Used like bool
+    uint8_t is_admin_;  // Used like bool
 };
 
 std::ifstream& operator>>(std::ifstream& in, UserData& data) {
+    in >> data.login_;
     in >> data.password_;
     in >> data.is_admin_;
     return in;
 }
 
 std::ofstream& operator<<(std::ofstream& out, const UserData& data) {
-    out << data.password_;
+    out << data.login_ << std::endl;
+    out << data.password_ << std::endl;
     out << data.is_admin_;
     return out;
 }
@@ -72,13 +86,16 @@ std::ofstream& operator<<(std::ofstream& out, const UserData& data) {
 class UsersData {
    public:
     void LoadData(std::string DataPath) {
+        data_.clear();
+        id_by_login_.clear();
         std::ifstream in(DataPath.c_str());
         while (!in.eof()) {
-            std::string user_name;
-            in >> user_name;
+            uint64_t id;
+            in >> id;
             UserData user_data;
             in >> user_data;
-            data_[user_name] = user_data;
+            data_[id] = user_data;
+            id_by_login_[user_data.login_] = id;
         }
     }
 
@@ -90,12 +107,50 @@ class UsersData {
         }
     }
 
-    std::map<std::string, UserData>& Data() {
+    std::map<uint64_t, UserData>& Data() {
         return data_;
     }
 
+    uint64_t FindId(std::string login) {
+        auto x = id_by_login_.find(login);
+        if (x == id_by_login_.end()) {
+            return 0;
+        }
+        return (*x).second;
+    }
+
+    Responses SignIn(std::string login, std::string password) {
+        auto id = FindId(login);
+        if (!id) {
+            return Responses::kBadLogin;
+        }
+        if (data_[id].password_ == password) {
+            return Responses::kSuccessLogin;
+        }
+        return Responses::kBadLogin;
+    }
+
+    Responses SignUp(std::string login, std::string password) {
+        auto id = FindId(login);
+        if (id) {
+            return Responses::kLoginIsAlreadyUsed;
+        }
+        std::random_device gen;
+        uint64_t new_id = gen() * gen() - gen();
+        while (data_.find(new_id) != data_.end()) {
+            new_id = gen() * gen() - gen();
+        }
+        UserData cur_data;
+        cur_data.is_admin_ = false;
+        cur_data.password_ = password;
+        data_[new_id] = cur_data;
+        id_by_login_[login] = new_id;
+        return Responses::kSuccessSignUp;
+    }
+
    private:
-    std::map<std::string, UserData> data_;
+    std::map<uint64_t, UserData> data_;
+    std::map<std::string, uint64_t> id_by_login_;
 };
 
 class Server {
@@ -139,6 +194,8 @@ class Server {
 
    private:
     void DeleteUser(sf::TcpSocket* socket) {
+        socket->disconnect();
+        delete socket;
         user_vector_mutex_.lock();
         size_t position =
             std::find(cur_users_.begin(), cur_users_.end(), socket) - cur_users_.begin();
@@ -181,14 +238,31 @@ class Server {
         switch (que) {
             case Queries::kEcho: {
                 std::string msg;
+                sf::Packet rpacket;
                 if (!(packet >> msg)) {
-                    packet << Responses::kError;
-                    SendData(socket, packet);
-                    return;
+                    rpacket << Responses::kError;
+                    SendData(socket, rpacket);
+                    break;
                 }
-                packet.clear();
-                packet << Responses::kOk << msg;
-                SendData(socket, packet);
+                rpacket << Responses::kOk << msg;
+                SendData(socket, rpacket);
+                break;
+            }
+            case Queries::kLogin: {
+                sf::Packet rpacket;
+                std::string login;
+                std::string password;
+                if (!(packet >> login)) {
+                    rpacket << Responses::kError;
+                    SendData(socket, rpacket);
+                    break;
+                }
+                if (!(packet >> password)) {
+                    rpacket << Responses::kError;
+                    SendData(socket, rpacket);
+                    break;
+                }
+
                 break;
             }
             default: {
@@ -229,5 +303,7 @@ int main() {
     uint16_t port = 0;
     std::cin >> port;
     Server server(port);
+    std::thread cmd_th([&server]() { server.Cmd(); });
+    cmd_th.detach();
     server.Listen();
 }
