@@ -15,9 +15,13 @@ enum class Responses : uint8_t {
     kError,
     kBadLogin,
     kMessage,
-    kEmptyResponse
+    kEmptyResponse,
+    kSuccessSignIn,
+    kLoginIsAlreadyUsed,
+    kSuccessSignUp,
+    kBadLoginFormat,
 };
-enum class Queries : uint8_t { kLogin, kEcho };
+enum class Queries : uint8_t { kEcho, kSignUp, kSignIn, kLogOut, kLoginFormat };
 
 sf::Packet& operator<<(sf::Packet& out, const Responses& rep) {
     return out << static_cast<uint8_t>(rep);
@@ -66,7 +70,7 @@ class Data {
 
 void PrintMessage(std::string msg) {
     cout_mutex.lock();
-    std::cout << msg;
+    std::cout << msg << std::endl;
     cout_mutex.unlock();
 }
 
@@ -154,12 +158,22 @@ bool ConnectToServer(Data& data, bool output_flag) {
     return false;
 }
 
+bool EmptySocket(Data& data, bool output_flag) {
+    if (data.socket_ == nullptr) {
+        if (output_flag) {
+            PrintMessage("There is no stable connection to the server! Need to connect first.\n");
+        }
+        return true;
+    }
+    return false;
+}
+
 bool EchoFunc(Data& data, bool output_flag) {
     if (data.socket_ == nullptr) {
         if (output_flag) {
             PrintMessage(
                 "There is no stable connection to the server! Use connect to connect to the "
-                "server");
+                "server\n");
         }
     } else {
         sf::Packet packet;
@@ -192,6 +206,68 @@ bool EchoFunc(Data& data, bool output_flag) {
     return false;
 }
 
+void LogFormatFunc(Data& data, bool output_flag) {
+    if (EmptySocket(data, output_flag)) {
+        return;
+    }
+    sf::Packet packet;
+    packet << Queries::kLoginFormat;
+    SendData(data.socket_, packet);
+    packet.clear();
+    GetData(data.socket_, packet);
+    Responses rep;
+    if (!(packet >> rep)) {
+        PrintMessage("Bad packet recieved!");
+        return;
+    }
+    if (rep != Responses::kOk) {
+        PrintMessage("Something went wrong.");
+        return;
+    }
+    uint8_t lmin, lmax, pmin, pmax;
+    if (!(packet >> lmin >> lmax >> pmin >> pmax)) {
+        PrintMessage("Bad packet recieved!");
+        return;
+    }
+    PrintMessage("Login minimum length: " + std::to_string(lmin));
+    PrintMessage("Login maximum length: " + std::to_string(lmax));
+    PrintMessage("Password minimum length: " + std::to_string(pmin));
+    PrintMessage("Password maximum length: " + std::to_string(pmax));
+    return;
+}
+
+void SignInFunc(Data& data, bool output_flag) {
+    if (EmptySocket(data, output_flag)) {
+        return;
+    }
+    sf::Packet packet;
+    packet << Queries::kSignIn;
+    packet << data.login_ << data.pass_;
+    SendData(data.socket_, packet);
+    sf::Packet rpacket;
+    Responses rep;
+    if (!GetData(data.socket_, rpacket)) {
+        PrintMessage("Something went wrong during recieving package");
+        return;
+    }
+    if (!(rpacket >> rep)) {
+        PrintMessage("Recieved bad package!");
+        return;
+    } 
+    if (rep == Responses::kBadLoginFormat) {
+        PrintMessage("Bad login or password format!");
+        return;
+    }
+    if (rep == Responses::kBadLogin) {
+        PrintMessage("Login or password is/are incorrect!");
+        return;
+    }
+    if (rep == Responses::kSuccessSignIn) {
+        PrintMessage("Signed in successfully!");
+        return;
+    }
+}
+ 
 void CommandHandler() {
     Data data;
     PrintMessage("Client is ready. Type command \"help\" to get command list");
@@ -218,6 +294,12 @@ void CommandHandler() {
         }
         if (com == "echo") {
             EchoFunc(data, true);
+        }
+        if (com == "login_format") {
+            LogFormatFunc(data, true);
+        }
+        if (com == "signin") {
+            SignInFunc(data, true);
         }
     }
 }
