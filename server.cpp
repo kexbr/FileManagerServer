@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <istream>
 #include <mutex>
 #include <random>
 #include <thread>
@@ -97,6 +98,13 @@ std::ofstream& operator<<(std::ofstream& out, const UserData& data) {
     return out;
 }
 
+std::ostream& operator<<(std::ostream& out, const UserData& data) {
+    out << data.login_ << std::endl;
+    out << data.password_ << std::endl;
+    out << data.is_admin_;
+    return out;
+}
+
 class UsersData {
    public:
     void LoadData(std::string DataPath) {
@@ -157,6 +165,7 @@ class UsersData {
         UserData cur_data;
         cur_data.is_admin_ = false;
         cur_data.password_ = password;
+        cur_data.login_ = login;
         data_[new_id] = cur_data;
         id_by_login_[login] = new_id;
         ans_id = new_id;
@@ -213,9 +222,32 @@ void Server::Cmd() {
         getline(std::cin, dummy);
     }
     for (;;) {
-        getline(std::cin, s);
+        std::string s;
+        std::cin >> s;
         if (s == "save") {
-            users_data_.SaveData("users.data");
+            std::string filepath;
+            std::cin >> filepath;
+            PrintMessage("Saving users data.");
+            users_data_.SaveData(filepath);
+        }
+        if (s == "load") {
+            std::string filepath;
+            std::cin >> filepath;
+            PrintMessage("Loading users data.");
+            user_vector_mutex_.lock();
+            for (auto &i : cur_users_) {
+                i->disconnect();
+            }
+            cur_users_.clear();
+            user_id_.clear();
+            user_vector_mutex_.unlock();
+            users_data_.LoadData(filepath);
+        }
+        if (s == "check") {
+            for (auto &i : users_data_.Data()) {
+                std::cout << i.first << std::endl;
+                std::cout << i.second << std::endl;
+            }
         }
     }
 }
@@ -356,7 +388,7 @@ void Server::HandleQuery(sf::TcpSocket* socket, sf::Packet& packet) {
                 rpacket << res;
                 SendData(socket, rpacket);
                 break;
-            }
+            }   
             user_vector_mutex_.lock();
             size_t position =
                 std::find(cur_users_.begin(), cur_users_.end(), socket) - cur_users_.begin();

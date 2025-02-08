@@ -253,7 +253,7 @@ void SignInFunc(Data& data, bool output_flag) {
     if (!(rpacket >> rep)) {
         PrintMessage("Recieved bad package!");
         return;
-    } 
+    }
     if (rep == Responses::kBadLoginFormat) {
         PrintMessage("Bad login or password format!");
         return;
@@ -267,7 +267,48 @@ void SignInFunc(Data& data, bool output_flag) {
         return;
     }
 }
- 
+
+void SignUpFunc(Data& data, bool output_flag) {
+    if (EmptySocket(data, output_flag)) {
+        return;
+    }
+    sf::Packet packet;
+    packet << Queries::kSignUp;
+    packet << data.login_;
+    packet << data.pass_;
+    SendData(data.socket_, packet);
+    sf::Packet rpacket;
+    if (!GetData(data.socket_, rpacket)) {
+        PrintMessage("Something went wrong during recieving package.");
+        return;
+    }
+    Responses rep;
+    if (!(rpacket >> rep)) {
+        PrintMessage("Bad packet.");
+        return;
+    }
+    if (rep == Responses::kError) {
+        PrintMessage("Error from the server has occured");
+        return;
+    }
+    if (rep == Responses::kEmptyResponse) {
+        PrintMessage("Server hasn't sent anything");
+        return;
+    }
+    if (rep == Responses::kBadLoginFormat) {
+        PrintMessage("Bad login or password format!");
+        return;
+    }
+    if (rep == Responses::kLoginIsAlreadyUsed) {
+        PrintMessage("Login is already used!");
+        return;
+    }
+    if (rep == Responses::kSuccessSignUp) {
+        PrintMessage("Signed up successfully!");
+        return;
+    }
+}
+
 void CommandHandler() {
     Data data;
     PrintMessage("Client is ready. Type command \"help\" to get command list");
@@ -300,6 +341,9 @@ void CommandHandler() {
         }
         if (com == "signin") {
             SignInFunc(data, true);
+        }
+        if (com == "signup") {
+            SignUpFunc(data, true);
         }
     }
 }
