@@ -26,6 +26,8 @@ enum class Responses : uint8_t {
     kLoginIsAlreadyUsed,
     kSuccessSignUp,
     kBadLoginFormat,
+    kFileData,
+    kDisconnect
 };
 enum class Queries : uint8_t { kEcho, kSignUp, kSignIn, kLogOut, kLoginFormat };
 
@@ -128,7 +130,7 @@ class UsersData {
             out << i.second << std::endl;
         }
     }
-    
+
     std::map<uint64_t, UserData>& Data() {
         return data_;
     }
@@ -235,8 +237,9 @@ void Server::Cmd() {
             std::cin >> filepath;
             PrintMessage("Loading users data.");
             user_vector_mutex_.lock();
-            for (auto &i : cur_users_) {
+            for (auto& i : cur_users_) {
                 i->disconnect();
+                delete i;
             }
             cur_users_.clear();
             user_id_.clear();
@@ -244,7 +247,7 @@ void Server::Cmd() {
             users_data_.LoadData(filepath);
         }
         if (s == "check") {
-            for (auto &i : users_data_.Data()) {
+            for (auto& i : users_data_.Data()) {
                 std::cout << i.first << std::endl;
                 std::cout << i.second << std::endl;
             }
@@ -279,13 +282,19 @@ void Server::Listen() {
 }
 
 void Server::DeleteUser(sf::TcpSocket* socket) {
-    socket->disconnect();
-    delete socket;
-    user_vector_mutex_.lock();
-    size_t position = std::find(cur_users_.begin(), cur_users_.end(), socket) - cur_users_.begin();
-    cur_users_.erase(cur_users_.begin() + position);
-    user_id_.erase(user_id_.begin() + position);
-    user_vector_mutex_.unlock();
+    if (socket != nullptr) {
+        user_vector_mutex_.lock();
+        auto position =
+            std::find(cur_users_.begin(), cur_users_.end(), socket);
+        if (position != cur_users_.end()) {
+            user_id_.erase(user_id_.begin() + (position - cur_users_.begin()));
+            cur_users_.erase(position);
+        }
+        user_vector_mutex_.unlock();
+        socket->disconnect();
+        delete socket;
+        socket = nullptr;
+    }
 }
 
 bool Server::SendData(sf::TcpSocket* socket, sf::Packet& packet) {
@@ -388,7 +397,7 @@ void Server::HandleQuery(sf::TcpSocket* socket, sf::Packet& packet) {
                 rpacket << res;
                 SendData(socket, rpacket);
                 break;
-            }   
+            }
             user_vector_mutex_.lock();
             size_t position =
                 std::find(cur_users_.begin(), cur_users_.end(), socket) - cur_users_.begin();
@@ -431,8 +440,7 @@ void Server::ClientHandler(sf::TcpSocket* socket) {
             PrintMessage("Got data\n");
             HandleQuery(socket, r_packet);
         } else {
-            DeleteUser(socket);
-            break;
+            return;
         }
         r_packet.clear();
     }

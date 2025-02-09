@@ -345,6 +345,9 @@ void CommandHandler() {
         if (com == "signup") {
             SignUpFunc(data, true);
         }
+        if (com == "disconnect") {
+            TerminateSocket(data);
+        }
     }
 }
 
