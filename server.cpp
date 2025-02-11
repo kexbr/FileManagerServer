@@ -1,4 +1,12 @@
+/*TODO:
+1) fix load method
+2) replace ptrs with shared_ptrs
+3) write file managment
+4) make administrator methods
+*/
+
 #include <SFML/Network.hpp>
+#include <atomic>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -6,52 +14,12 @@
 #include <mutex>
 #include <random>
 #include <thread>
+#include "constants.h"
+#include "enums.h"
+#include "packet_overloads.h"
 
 std::mutex cout_mutex;
-
-const uint8_t kLoginMinLength = 4;
-const uint8_t kPasswordMinLength = 4;
-const uint8_t kLoginMaxLength = 32;
-const uint8_t kPasswordMaxLength = 32;
-
-enum class Responses : uint8_t {
-    kSuccessConnection,
-    kOk,
-    kNoAccess,
-    kError,
-    kBadLogin,
-    kMessage,
-    kEmptyResponse,
-    kSuccessSignIn,
-    kLoginIsAlreadyUsed,
-    kSuccessSignUp,
-    kBadLoginFormat,
-    kFileData,
-    kDisconnect
-};
-enum class Queries : uint8_t { kEcho, kSignUp, kSignIn, kLogOut, kLoginFormat };
-
-sf::Packet& operator<<(sf::Packet& out, const Responses& rep) {
-    return out << static_cast<uint8_t>(rep);
-}
-
-sf::Packet& operator>>(sf::Packet& in, Responses& rep) {
-    uint8_t ans;
-    in >> ans;
-    rep = static_cast<Responses>(ans);
-    return in;
-}
-
-sf::Packet& operator<<(sf::Packet& out, const Queries& rep) {
-    return out << static_cast<uint8_t>(rep);
-}
-
-sf::Packet& operator>>(sf::Packet& in, Queries& rep) {
-    uint8_t ans;
-    in >> ans;
-    rep = static_cast<Queries>(ans);
-    return in;
-}
+std::atomic<int> reader_count_{0};
 
 void PrintMessage(std::string msg) {
     cout_mutex.lock();
@@ -196,6 +164,8 @@ class Server {
         return cur_users_;
     }
 
+    class FileClass;
+
    private:
     void DeleteUser(sf::TcpSocket* socket);
 
@@ -206,6 +176,9 @@ class Server {
     void HandleQuery(sf::TcpSocket* socket, sf::Packet& packet);
 
     void ClientHandler(sf::TcpSocket* socket);
+
+    FileStatus SendFile(
+        sf::TcpSocket* socket, std::string path, std::string filename, uint64_t start_pos);
 
     std::mutex user_vector_mutex_;
     std::vector<sf::TcpSocket*>
@@ -284,8 +257,7 @@ void Server::Listen() {
 void Server::DeleteUser(sf::TcpSocket* socket) {
     if (socket != nullptr) {
         user_vector_mutex_.lock();
-        auto position =
-            std::find(cur_users_.begin(), cur_users_.end(), socket);
+        auto position = std::find(cur_users_.begin(), cur_users_.end(), socket);
         if (position != cur_users_.end()) {
             user_id_.erase(user_id_.begin() + (position - cur_users_.begin()));
             cur_users_.erase(position);
@@ -444,6 +416,42 @@ void Server::ClientHandler(sf::TcpSocket* socket) {
         }
         r_packet.clear();
     }
+}
+
+FileStatus Server::SendFile(
+    sf::TcpSocket* socket, std::string path, std::string filename, uint64_t start_pos) {
+    if (reader_count_.load() >= kMaxOpenedFiles) {
+        return FileStatus::kBusy;
+    }
+    std::ifstream in(path + filename, std::ios::binary | std::ios::ate);
+    if (!in.is_open()) {
+        return FileStatus::kNotFound;
+    }
+    sf::Packet packet;
+    std::streampos pos = in.tellg();
+    uint64_t filesize = static_cast<uint64_t>(pos);
+    packet << Responses::kFileSize;
+    packet << filesize;
+    if (!SendData(socket, packet)) {
+        return FileStatus::kConnectionError;
+    }
+    in.seekg(start_pos, std::ios::beg);
+    packet.clear();
+    while (!in.eof()) {
+        std::string buf;
+        while ((!in.eof()) && buf.size() < kFileBlockSize) {
+            char c = in.get();
+            buf.push_back(c);
+        }
+        packet << Responses::kFileData << buf;
+        if (!SendData(socket, packet)) {
+            in.close();
+            return FileStatus::kConnectionError;
+        }
+        packet.clear();
+    }
+    in.close();
+    return FileStatus::kDone;
 }
 
 int main() {

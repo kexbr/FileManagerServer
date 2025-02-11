@@ -1,49 +1,23 @@
+/*
+    TODO:
+    1) crashlog
+    2) reconnection method
+*/
+
 #include <SFML/Network.hpp>
 #include <chrono>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <string>
 #include <thread>
+#include "enums.h"
+#include "packet_overloads.h"
 
 std::mutex cout_mutex;
 
-enum class Responses : uint8_t {
-    kSuccessConnection,
-    kOk,
-    kNoAccess,
-    kError,
-    kBadLogin,
-    kMessage,
-    kEmptyResponse,
-    kSuccessSignIn,
-    kLoginIsAlreadyUsed,
-    kSuccessSignUp,
-    kBadLoginFormat,
-};
-enum class Queries : uint8_t { kEcho, kSignUp, kSignIn, kLogOut, kLoginFormat };
-
-sf::Packet& operator<<(sf::Packet& out, const Responses& rep) {
-    return out << static_cast<uint8_t>(rep);
-}
-
-sf::Packet& operator>>(sf::Packet& in, Responses& rep) {
-    uint8_t ans;
-    in >> ans;
-    rep = static_cast<Responses>(ans);
-    return in;
-}
-
-sf::Packet& operator<<(sf::Packet& out, const Queries& rep) {
-    return out << static_cast<uint8_t>(rep);
-}
-
-sf::Packet& operator>>(sf::Packet& in, Queries& rep) {
-    uint8_t ans;
-    in >> ans;
-    rep = static_cast<Queries>(ans);
-    return in;
-}
+const int kReconnectionTimes = 3;
 
 bool SendData(sf::TcpSocket* socket, sf::Packet& packet) {
     if (socket->send(packet) != sf::Socket::Done) {
@@ -309,6 +283,36 @@ void SignUpFunc(Data& data, bool output_flag) {
     }
 }
 
+void GetFile(Data& data, std::string filename, std::string path) {
+    sf::TcpSocket socket;
+    if (socket.connect(data.ip_, data.port_) != sf::Socket::Done) {
+        PrintMessage("Can't connect to the server!");
+    }
+    std::ofstream out(path, std::ios::ate | std::ios::binary);
+    int curRecTimes = 0;
+    uint64_t recieved = 0;
+    sf::Packet packet;
+    packet << Queries::kSendFile;
+    packet << filename << path << recieved;
+    if (!SendData(data.socket_, packet)) {
+        PrintMessage("Error has occured during sending file request.");
+        return;
+    }
+    packet.clear();
+    if (!GetData(data.socket_, packet)) {
+        PrintMessage("Error has occured during recieveng information about file.");
+        return;
+    }
+    Responses rep;
+    if (!(packet >> rep)) {
+        PrintMessage("Something is wrong with file information.");
+    }
+    if (rep == Responses::kNoAccess) {
+        PrintMessage("You don't have access to this file!");
+        return;
+    }
+}
+
 void CommandHandler() {
     Data data;
     PrintMessage("Client is ready. Type command \"help\" to get command list");
@@ -347,6 +351,14 @@ void CommandHandler() {
         }
         if (com == "disconnect") {
             TerminateSocket(data);
+        }
+        if (com == "getfile") {
+            std::string filename;
+            std::string path;
+            getline(std::cin, filename);
+            getline(std::cin, path);
+            std::thread rec_th(GetFile, data, filename, path);
+            rec_th.detach();
         }
     }
 }
