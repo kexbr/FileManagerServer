@@ -283,33 +283,70 @@ void SignUpFunc(Data& data, bool output_flag) {
     }
 }
 
-void GetFile(Data& data, std::string filename, std::string path) {
+void GetFile(std::string ip, uint16_t port, std::string filename, std::string path) {
     sf::TcpSocket socket;
-    if (socket.connect(data.ip_, data.port_) != sf::Socket::Done) {
+    if (socket.connect(ip, port) != sf::Socket::Done) {
         PrintMessage("Can't connect to the server!");
     }
-    std::ofstream out(path, std::ios::ate | std::ios::binary);
     int curRecTimes = 0;
     uint64_t recieved = 0;
     sf::Packet packet;
     packet << Queries::kSendFile;
-    packet << filename << path << recieved;
-    if (!SendData(data.socket_, packet)) {
+    packet << filename << recieved;
+    if (!SendData(&socket, packet)) {
         PrintMessage("Error has occured during sending file request.");
         return;
     }
     packet.clear();
-    if (!GetData(data.socket_, packet)) {
+    if (!GetData(&socket, packet)) {
         PrintMessage("Error has occured during recieveng information about file.");
         return;
     }
     Responses rep;
     if (!(packet >> rep)) {
         PrintMessage("Something is wrong with file information.");
+        return;
     }
     if (rep == Responses::kNoAccess) {
         PrintMessage("You don't have access to this file!");
         return;
+    }
+    if (rep == Responses::kNotFound) {
+        PrintMessage("File not found!");
+        return;
+    }
+    if (rep != Responses::kFileSize) {
+        PrintMessage("Bad response!");
+        return;
+    }
+    uint64_t sz;
+    if (!(packet >> sz)) {
+        PrintMessage("Something is wrong with file information.");
+    }
+    PrintMessage("Starting download the file with size " + std::to_string(sz) + " bytes.");
+    std::ofstream out(path, std::ios::ate | std::ios::binary);
+    if (!out.is_open()) {
+        PrintMessage("Can't open the file!");
+        return;
+    }
+    while(recieved < sz) {
+        packet.clear();
+        if (!GetData(&socket, packet)) {
+            //TODO: Reconnection
+            PrintMessage("Can't download the file.");
+        } else {
+            if ((!(packet >> rep)) || rep != Responses::kFileData) {
+                PrintMessage("Bad packet with file data recieved!");
+            } else {
+                std::string data;
+                if(!(packet >> data)) {
+                    PrintMessage("Bad packet with file data recieved!");
+                }
+                recieved += data.size();
+                out << data;
+                PrintMessage("Recieved and wrote " + std::to_string(recieved) + " bytes from " + std::to_string(sz));
+            }
+        }
     }
 }
 
@@ -357,7 +394,7 @@ void CommandHandler() {
             std::string path;
             getline(std::cin, filename);
             getline(std::cin, path);
-            std::thread rec_th(GetFile, data, filename, path);
+            std::thread rec_th(GetFile, data.ip_, data.port_, filename, path);
             rec_th.detach();
         }
     }

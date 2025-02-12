@@ -178,7 +178,7 @@ class Server {
     void ClientHandler(sf::TcpSocket* socket);
 
     FileStatus SendFile(
-        sf::TcpSocket* socket, std::string path, std::string filename, uint64_t start_pos);
+        sf::TcpSocket* socket, std::string filename, uint64_t start_pos);
 
     std::mutex user_vector_mutex_;
     std::vector<sf::TcpSocket*>
@@ -395,6 +395,21 @@ void Server::HandleQuery(sf::TcpSocket* socket, sf::Packet& packet) {
             SendData(socket, rpacket);
             break;
         }
+        case Queries::kSendFile: {
+            std::string filename;
+            uint64_t recieved;
+            sf::Packet rpacket;
+            if (!(packet >> filename)) {
+                DeleteUser(socket);
+                return;
+            }
+            if (!(packet >> recieved)) {
+                DeleteUser(socket);
+                return;
+            }
+            SendFile(socket, filename, recieved);
+            break;
+        }
         default: {
             packet.clear();
             packet << Responses::kEmptyResponse;
@@ -419,20 +434,22 @@ void Server::ClientHandler(sf::TcpSocket* socket) {
 }
 
 FileStatus Server::SendFile(
-    sf::TcpSocket* socket, std::string path, std::string filename, uint64_t start_pos) {
+    sf::TcpSocket* socket, std::string filename, uint64_t start_pos) {
     if (reader_count_.load() >= kMaxOpenedFiles) {
         return FileStatus::kBusy;
     }
-    std::ifstream in(path + filename, std::ios::binary | std::ios::ate);
+    std::ifstream in(filename, std::ios::binary | std::ios::ate);
     if (!in.is_open()) {
         return FileStatus::kNotFound;
     }
+    reader_count_++;
     sf::Packet packet;
     std::streampos pos = in.tellg();
     uint64_t filesize = static_cast<uint64_t>(pos);
     packet << Responses::kFileSize;
     packet << filesize;
     if (!SendData(socket, packet)) {
+        reader_count_--;
         return FileStatus::kConnectionError;
     }
     in.seekg(start_pos, std::ios::beg);
@@ -446,11 +463,13 @@ FileStatus Server::SendFile(
         packet << Responses::kFileData << buf;
         if (!SendData(socket, packet)) {
             in.close();
+            reader_count_--;
             return FileStatus::kConnectionError;
         }
         packet.clear();
     }
     in.close();
+    reader_count_--;
     return FileStatus::kDone;
 }
 

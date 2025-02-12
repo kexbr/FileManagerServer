@@ -13,7 +13,8 @@ enum class Responses : uint8_t {
     kBadLoginFormat,
     kFileData,
     kFileSize,
-    kDisconnect
+    kDisconnect,
+    kNotFound
 };
 enum class Queries : uint8_t { kEcho, kSignUp, kSignIn, kLogOut, kLoginFormat, kSendFile };
 enum class FileStatus : uint8_t { kDone, kBusy, kDisconnect, kError, kNotFound, kConnectionError };
