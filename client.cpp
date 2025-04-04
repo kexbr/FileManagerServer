@@ -1,45 +1,23 @@
+/*
+    TODO:
+    1) crashlog
+    2) reconnection method
+*/
+
 #include <SFML/Network.hpp>
 #include <chrono>
 #include <cstdint>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <string>
 #include <thread>
+#include "enums.h"
+#include "packet_overloads.h"
 
 std::mutex cout_mutex;
 
-enum class Responses : uint8_t {
-    kSuccessConnection,
-    kOk,
-    kNoAccess,
-    kError,
-    kBadLogin,
-    kMessage,
-    kEmptyResponse
-};
-enum class Queries : uint8_t { kLogin, kEcho };
-
-sf::Packet& operator<<(sf::Packet& out, const Responses& rep) {
-    return out << static_cast<uint8_t>(rep);
-}
-
-sf::Packet& operator>>(sf::Packet& in, Responses& rep) {
-    uint8_t ans;
-    in >> ans;
-    rep = static_cast<Responses>(ans);
-    return in;
-}
-
-sf::Packet& operator<<(sf::Packet& out, const Queries& rep) {
-    return out << static_cast<uint8_t>(rep);
-}
-
-sf::Packet& operator>>(sf::Packet& in, Queries& rep) {
-    uint8_t ans;
-    in >> ans;
-    rep = static_cast<Queries>(ans);
-    return in;
-}
+const int kReconnectionTimes = 3;
 
 bool SendData(sf::TcpSocket* socket, sf::Packet& packet) {
     if (socket->send(packet) != sf::Socket::Done) {
@@ -66,7 +44,7 @@ class Data {
 
 void PrintMessage(std::string msg) {
     cout_mutex.lock();
-    std::cout << msg;
+    std::cout << msg << std::endl;
     cout_mutex.unlock();
 }
 
@@ -154,12 +132,22 @@ bool ConnectToServer(Data& data, bool output_flag) {
     return false;
 }
 
+bool EmptySocket(Data& data, bool output_flag) {
+    if (data.socket_ == nullptr) {
+        if (output_flag) {
+            PrintMessage("There is no stable connection to the server! Need to connect first.\n");
+        }
+        return true;
+    }
+    return false;
+}
+
 bool EchoFunc(Data& data, bool output_flag) {
     if (data.socket_ == nullptr) {
         if (output_flag) {
             PrintMessage(
                 "There is no stable connection to the server! Use connect to connect to the "
-                "server");
+                "server\n");
         }
     } else {
         sf::Packet packet;
@@ -192,6 +180,176 @@ bool EchoFunc(Data& data, bool output_flag) {
     return false;
 }
 
+void LogFormatFunc(Data& data, bool output_flag) {
+    if (EmptySocket(data, output_flag)) {
+        return;
+    }
+    sf::Packet packet;
+    packet << Queries::kLoginFormat;
+    SendData(data.socket_, packet);
+    packet.clear();
+    GetData(data.socket_, packet);
+    Responses rep;
+    if (!(packet >> rep)) {
+        PrintMessage("Bad packet recieved!");
+        return;
+    }
+    if (rep != Responses::kOk) {
+        PrintMessage("Something went wrong.");
+        return;
+    }
+    uint8_t lmin, lmax, pmin, pmax;
+    if (!(packet >> lmin >> lmax >> pmin >> pmax)) {
+        PrintMessage("Bad packet recieved!");
+        return;
+    }
+    PrintMessage("Login minimum length: " + std::to_string(lmin));
+    PrintMessage("Login maximum length: " + std::to_string(lmax));
+    PrintMessage("Password minimum length: " + std::to_string(pmin));
+    PrintMessage("Password maximum length: " + std::to_string(pmax));
+    return;
+}
+
+void SignInFunc(Data& data, bool output_flag) {
+    if (EmptySocket(data, output_flag)) {
+        return;
+    }
+    sf::Packet packet;
+    packet << Queries::kSignIn;
+    packet << data.login_ << data.pass_;
+    SendData(data.socket_, packet);
+    sf::Packet rpacket;
+    Responses rep;
+    if (!GetData(data.socket_, rpacket)) {
+        PrintMessage("Something went wrong during recieving package");
+        return;
+    }
+    if (!(rpacket >> rep)) {
+        PrintMessage("Recieved bad package!");
+        return;
+    }
+    if (rep == Responses::kBadLoginFormat) {
+        PrintMessage("Bad login or password format!");
+        return;
+    }
+    if (rep == Responses::kBadLogin) {
+        PrintMessage("Login or password is/are incorrect!");
+        return;
+    }
+    if (rep == Responses::kSuccessSignIn) {
+        PrintMessage("Signed in successfully!");
+        return;
+    }
+}
+
+void SignUpFunc(Data& data, bool output_flag) {
+    if (EmptySocket(data, output_flag)) {
+        return;
+    }
+    sf::Packet packet;
+    packet << Queries::kSignUp;
+    packet << data.login_;
+    packet << data.pass_;
+    SendData(data.socket_, packet);
+    sf::Packet rpacket;
+    if (!GetData(data.socket_, rpacket)) {
+        PrintMessage("Something went wrong during recieving package.");
+        return;
+    }
+    Responses rep;
+    if (!(rpacket >> rep)) {
+        PrintMessage("Bad packet.");
+        return;
+    }
+    if (rep == Responses::kError) {
+        PrintMessage("Error from the server has occured");
+        return;
+    }
+    if (rep == Responses::kEmptyResponse) {
+        PrintMessage("Server hasn't sent anything");
+        return;
+    }
+    if (rep == Responses::kBadLoginFormat) {
+        PrintMessage("Bad login or password format!");
+        return;
+    }
+    if (rep == Responses::kLoginIsAlreadyUsed) {
+        PrintMessage("Login is already used!");
+        return;
+    }
+    if (rep == Responses::kSuccessSignUp) {
+        PrintMessage("Signed up successfully!");
+        return;
+    }
+}
+
+void GetFile(std::string ip, uint16_t port, std::string filename, std::string path) {
+    sf::TcpSocket socket;
+    if (socket.connect(ip, port) != sf::Socket::Done) {
+        PrintMessage("Can't connect to the server!");
+    }
+    int curRecTimes = 0;
+    uint64_t recieved = 0;
+    sf::Packet packet;
+    packet << Queries::kSendFile;
+    packet << filename << recieved;
+    if (!SendData(&socket, packet)) {
+        PrintMessage("Error has occured during sending file request.");
+        return;
+    }
+    packet.clear();
+    if (!GetData(&socket, packet)) {
+        PrintMessage("Error has occured during recieveng information about file.");
+        return;
+    }
+    Responses rep;
+    if (!(packet >> rep)) {
+        PrintMessage("Something is wrong with file information.");
+        return;
+    }
+    if (rep == Responses::kNoAccess) {
+        PrintMessage("You don't have access to this file!");
+        return;
+    }
+    if (rep == Responses::kNotFound) {
+        PrintMessage("File not found!");
+        return;
+    }
+    if (rep != Responses::kFileSize) {
+        PrintMessage("Bad response!");
+        return;
+    }
+    uint64_t sz;
+    if (!(packet >> sz)) {
+        PrintMessage("Something is wrong with file information.");
+    }
+    PrintMessage("Starting download the file with size " + std::to_string(sz) + " bytes.");
+    std::ofstream out(path, std::ios::ate | std::ios::binary);
+    if (!out.is_open()) {
+        PrintMessage("Can't open the file!");
+        return;
+    }
+    while(recieved < sz) {
+        packet.clear();
+        if (!GetData(&socket, packet)) {
+            //TODO: Reconnection
+            PrintMessage("Can't download the file.");
+        } else {
+            if ((!(packet >> rep)) || rep != Responses::kFileData) {
+                PrintMessage("Bad packet with file data recieved!");
+            } else {
+                std::string data;
+                if(!(packet >> data)) {
+                    PrintMessage("Bad packet with file data recieved!");
+                }
+                recieved += data.size();
+                out << data;
+                PrintMessage("Recieved and wrote " + std::to_string(recieved) + " bytes from " + std::to_string(sz));
+            }
+        }
+    }
+}
+
 void CommandHandler() {
     Data data;
     PrintMessage("Client is ready. Type command \"help\" to get command list");
@@ -218,6 +376,26 @@ void CommandHandler() {
         }
         if (com == "echo") {
             EchoFunc(data, true);
+        }
+        if (com == "login_format") {
+            LogFormatFunc(data, true);
+        }
+        if (com == "signin") {
+            SignInFunc(data, true);
+        }
+        if (com == "signup") {
+            SignUpFunc(data, true);
+        }
+        if (com == "disconnect") {
+            TerminateSocket(data);
+        }
+        if (com == "getfile") {
+            std::string filename;
+            std::string path;
+            getline(std::cin, filename);
+            getline(std::cin, path);
+            std::thread rec_th(GetFile, data.ip_, data.port_, filename, path);
+            rec_th.detach();
         }
     }
 }

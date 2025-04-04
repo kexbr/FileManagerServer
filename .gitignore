@@ -1,0 +1,6 @@
+.vscode
+.clang-format
+a.out
+task.json
+compile-commands.json
+users.data
